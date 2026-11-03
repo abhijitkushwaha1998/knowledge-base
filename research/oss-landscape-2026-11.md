@@ -2,7 +2,7 @@
 
 *Research date: 2026-11-02. Licenses, star counts and last-push dates are a snapshot from the GitHub API on that date.*
 
-*Decision record added 2026-11-03: see §12, with the reasoning behind each chosen component in §13. Per-document permissions and Jira are out of scope. Sections that discuss them are kept as landscape information and are marked superseded in §12.*
+*Decision record added 2026-11-03: see §12, with the reasoning behind each chosen component in §13 and an adversarial design review of those choices in §14, applied the same day (two components changed, one deferred, two added; Postgres is self-hosted). §15 explains what an entity is and how entity resolution works. Per-document permissions and Jira are out of scope. Sections that discuss them are kept as landscape information and are marked superseded in §12.*
 
 ## How to read this report
 
@@ -665,15 +665,16 @@ Gaps that remain custom regardless: diagram parsing (§10 gap 2), database schem
 |---|---|---|
 | Connectors | `unstructured-ingest` (Apache-2.0) as a dependency. Teams and meeting transcripts forked from Onyx's MIT core | — |
 | Incremental sync | CocoIndex (Apache-2.0): fingerprint each record, process only changes, propagate deletes, flow state in Postgres | Durable multi-step jobs → Temporal |
-| Database sources | tbls for schema, Debezium for change capture | — |
+| Database sources | tbls for schema on a schedule. Row data is not indexed; Debezium is deferred | Rows from an operational database are indexed → Debezium |
 | Document parsing | Docling (MIT) | — |
-| Code intelligence | codebase-memory-mcp (MIT) per repository; its SQLite graph exported into the shared `edges` table | Regex search across every repo → Zoekt |
-| Store | One Postgres 17 or 18: `chunks` (BM25 via pg_textsearch), `embeddings` (pgvector HNSW), `edges` (Apache AGE), `documents` (sync state) | Vectors outgrow one node → Qdrant or OpenSearch, replacing the `embeddings` table only |
-| Retrieval | One SQL statement: vector similarity ∪ BM25 ∪ one graph hop, fused with RRF, returning chunks with source links | — |
-
-*Correction (2026-11-03): an earlier version of this table and the diagram labelled Postgres's built-in full-text search as BM25. Its `ts_rank` ranks by term frequency without corpus-wide document frequency, so it is not BM25. The BM25 index is now pg_textsearch; see §13.*
-| Gateway | Own thin MCP server + REST API: authenticates callers (API key or SSO), tool allow-list, read-only tools, audit, rate limits | — |
+| Code intelligence | codebase-memory-mcp (MIT) per repository; its SQLite graph exported as rows into the shared `entities` and `edges` tables, pinned to its `artifact.json` schema version. Code is not embedded in Postgres | Regex search across every repo → Zoekt |
+| Store | One self-hosted Postgres: `chunks` (built-in full-text search), `embeddings` (pgvector HNSW, one local text model), `entities` and `edges` (plain tables, recursive CTE for multi-hop), `documents` (sync state) | Keyword recall is the bottleneck → pg_textsearch (BM25). Queries need variable-length paths → a graph engine (Apache AGE or Neo4j), which arrives with Graphiti. Vectors outgrow one node → Qdrant or OpenSearch, replacing the `embeddings` table only |
+| Retrieval | One SQL statement: vector similarity ∪ keyword search ∪ one graph hop (a join on `edges`), fused with RRF, returning chunks with source links | — |
+| Entity resolution | Own component. Deterministic rules first (repository URLs on pages, service names from Kubernetes and Terraform, channel conventions), LLM-assisted matching later | — |
+| Gateway | Own thin MCP server + REST API: authenticates callers (API key or SSO), tool allow-list, read-only tools, audit, rate limits, response caps | — |
 | Conversational knowledge | Deferred. Graphiti episodes for Slack, transcripts and tacit knowledge, once a backend license is cleared (Neo4j is GPL, FalkorDB is SSPL) | — |
+
+*Revised 2026-11-03 after the §14 review, with Postgres confirmed self-hosted: `edges` is a plain table rather than Apache AGE; keyword search starts with Postgres's built-in full-text search (not BM25, since `ts_rank` ignores corpus-wide document frequency) with pg_textsearch as the gated upgrade; Debezium is deferred; entity resolution is added as a built component. The managed-hosting constraints in §14 do not apply to self-hosted Postgres, so these choices rest on simplicity and measurement alone.*
 
 Diagram: https://claude.ai/artifact/1Z5gMQM7iKKM671uoh2RQu
 
@@ -683,22 +684,25 @@ Deploy Onyx's MIT core unmodified for documents and chat, use its built-in MCP s
 
 ### Custom work remaining
 
-- The gateway: MCP plus REST, caller authentication, tool allow-list, audit. No destructive tools exposed.
+- The gateway: MCP plus REST, caller authentication, tool allow-list, audit, response caps. No destructive tools exposed.
+- Entity resolution: the `entities` table and the rules that fill it (§14 finding 5).
 - Connector gaps: Teams and transcripts (fork from Onyx MIT); a Draw.io parser (mxGraph XML) and a Lucidchart connector (Lucid REST API).
-- The export from codebase-memory-mcp's SQLite graph into `edges`.
-- The `edges` schema: service, repo, team, person, doc, incident, runbook, table, diagram.
+- The export from codebase-memory-mcp's SQLite graph into `entities` and `edges`, pinned to its schema version.
+- The `edges` schema: service, repo, team, person, doc, runbook, table, diagram. Incidents join when an incident source exists.
 - Ops data and team expertise (§10 gaps 6 and 7), unchanged.
 
 All of this is glue. None of it is security-critical.
 
 ### Verify before building
 
-- `unstructured-ingest`: read the Confluence, Slack and SharePoint connectors for change detection and deletion behaviour; neither is documented (§4.5).
+- `unstructured-ingest`: the Confluence, Slack and SharePoint connectors emit per-record versions, so edits are detectable (checked 2026-11-03). Test that deletions are caught by diffing full listings, especially for Slack when only recent history is fetched (§4.5, §13).
 - codebase-memory-mcp: confirm the SQLite schema is stable enough to export from, and audit the licenses of its bundled grammars and embedding model (§4.4).
 - CocoIndex: confirm the Postgres LISTEN/NOTIFY change capture, which rests on one changelog entry (§4.6).
 - If LightRAG is adopted later for document GraphRAG: confirm its Postgres storage classes, including the Apache AGE graph backend, which were not verified in this research.
 - Onyx Teams connector: check its dependencies before forking it out of the MIT core.
-- pg_textsearch: younger project; load-test BM25 quality and index build time on a real Confluence space before committing.
+- Keyword search: measure built-in full-text recall on a real Confluence space; switch to pg_textsearch only if it is the bottleneck (§14 finding 2).
+- Pipeline seam: decide shape (a), (b) or (c) from §14 finding 3 in the first spike, before anything is built on it.
+- Embedding model: pick one locally hosted text model for documents and chat (§14 finding 7).
 
 ## 13. Component selection rationale
 
@@ -708,19 +712,21 @@ Why each component in the §12 stack was chosen, what it was compared against, a
 
 | Component | Chosen | Why we chose it | Competitors considered | Advantage over the competitors | Trade-off we accept |
 |---|---|---|---|---|---|
-| SaaS connectors | **[unstructured-ingest](https://github.com/Unstructured-IO/unstructured-ingest)** (Apache-2.0) | One pip dependency covers Confluence, Slack, SharePoint, OneDrive, Google Drive, GitHub, GitLab and SQL sources, each installed as its own extra. It can also write to Neo4j, Qdrant and other stores if we outgrow Postgres. | Onyx connectors (MIT core, fork); PipesHub connectors (Apache-2.0, fork); LlamaHub readers (MIT); Airbyte / PyAirbyte (**ELv2**); dlt sources (Apache-2.0) | Used as a versioned dependency, so upstream fixes arrive with an upgrade. Onyx's and PipesHub's connectors are wired into their own apps and would be forks we maintain. Permissive where Airbyte is ELv2. One consistent pipeline for every source instead of LlamaHub readers of varying quality†. | Per-connector change detection and deletion handling are undocumented, so read the code first. The split-out repo is small (110 stars; parent `unstructured` has 15.7k). No Teams connector. |
-| Teams and meeting transcripts | **Onyx connectors forked from the MIT core** | The only Teams connector found among the candidates, plus Zoom, Gong and Fireflies connectors for meeting transcripts. | unstructured-ingest (no Teams); PipesHub (SharePoint, OneDrive, Outlook and Zoom, no Teams connector found); WhisperX + pyannote (transcribe audio ourselves; BSD-2 / MIT) | Production-used code under MIT. Transcripts arrive as text from the meeting tools, so no audio pipeline is needed. | A fork we own. Onyx-internal dependencies must be stripped before it runs standalone. Teams permission sync lives in Onyx's `ee/` folder, which we neither need nor may copy. |
+| SaaS connectors | **[unstructured-ingest](https://github.com/Unstructured-IO/unstructured-ingest)** (Apache-2.0) | One pip dependency covers Confluence, Slack, SharePoint, OneDrive, Google Drive, GitHub, GitLab and SQL sources, each installed as its own extra. It can also write to Neo4j, Qdrant and other stores if we outgrow Postgres. | Onyx connectors (MIT core, fork); PipesHub connectors (Apache-2.0, fork); LlamaHub readers (MIT); Airbyte / PyAirbyte (**ELv2**); dlt sources (Apache-2.0) | Used as a versioned dependency, so upstream fixes arrive with an upgrade. Onyx's and PipesHub's connectors are wired into their own apps and would be forks we maintain. Permissive where Airbyte is ELv2. One consistent pipeline for every source instead of LlamaHub readers of varying quality†. Change detection exists in the code (checked 2026-11-03): Confluence records each page's version number and modified date and lists every page each run; Slack bumps a conversation's version on new replies and edits and accepts a start date; SharePoint emits a version per record. Deletions are found by diffing successive full listings, which still needs a test for Slack when only recent history is fetched. The split-out repo is small (110 stars; parent `unstructured` has 15.7k). No Teams connector. |
+| Teams and meeting transcripts | **Onyx connectors forked from the MIT core** | The only Teams connector found among the candidates, plus Zoom, Gong and Fireflies connectors for meeting transcripts. | unstructured-ingest (no Teams); PipesHub (SharePoint, OneDrive, Outlook and Zoom, no Teams connector found); WhisperX + pyannote (transcribe audio ourselves; BSD-2 / MIT) | Production-used code under MIT. Transcripts arrive as text from the meeting tools, so no audio pipeline is needed. | A fork we own. Teams is the least entangled Onyx connector: its imports stay inside Onyx's connector package plus small utilities, with no dependency on Onyx's database, config or file store (checked 2026-11-03). Teams permission sync lives in Onyx's `ee/` folder, which we neither need nor may copy. |
 | Incremental sync | **[CocoIndex](https://github.com/cocoindex-io/cocoindex)** (Apache-2.0) | Built for keeping derived indexes in step with sources: it fingerprints content, reprocesses only what changed, applies deletes to targets, and re-runs when the pipeline definition changes. It stores its state in Postgres, which we run anyway, and has Postgres, Qdrant, Neo4j and LanceDB targets. | Pathway (**BSL 1.1**); Airbyte (**ELv2**); dlt (Apache-2.0); orchestrators such as Temporal, Dagster and Airflow; a hand-written cron job with cursors | Pathway and Airbyte are excluded on license. dlt does incremental extract-and-load with cursors but does not track chunk and embedding fingerprints or re-run on pipeline changes†. Orchestrators schedule work but detect no changes. Writing our own means rebuilding the fingerprint, delete and reprocess logic CocoIndex already has. | No enterprise SaaS sources of its own, so it wraps unstructured-ingest. Most feature claims are vendor-authored. Younger than Airbyte (11.8k stars, pushed daily). |
 | Database schema | **[tbls](https://github.com/k1LoW/tbls)** (MIT, Go) | Reads a live Postgres or MySQL database and documents its tables, columns, foreign keys and comments. A single binary that can run on a schedule. | SchemaSpy (**LGPL-3.0**, last push 2026-03-05); dlt `sql_database` (Apache-2.0); cognee `dlt_schema_graph` (Apache-2.0); PipesHub Postgres / MariaDB connectors (Apache-2.0) | Permissive where SchemaSpy is LGPL. No JVM, where SchemaSpy needs one†. More active (pushed 2026-11-03). Reads schema only, which is what the knowledge base needs; dlt and PipesHub copy row data. Its structured output maps directly to table nodes and foreign-key edges†. | Schema only. Linking tables to ORM models in code, and to documents, is our glue. |
-| Database change capture (only if row data is indexed) | **[Debezium](https://github.com/debezium/debezium)** (Apache-2.0) | Log-based change capture for both Postgres and MySQL without adding columns to application tables. | CocoIndex Postgres source (LISTEN/NOTIFY, Postgres only, one changelog source); polling on `updated_at` columns; Airbyte CDC (**ELv2**) | Covers both of our database engines, under a permissive license, and is mature (13.3k stars). Polling misses hard deletes and needs a timestamp column on every table. | Operationally heavy: it runs on Kafka Connect or Debezium Server†. **Skip it if only schemas are indexed**; tbls on a schedule is then enough. |
 | Document parsing | **[Docling](https://github.com/docling-project/docling)** (MIT) | Layout analysis, TableFormer table structure and OCR in one library. Chunks keep their page number and bounding box for precise citations, and docling-mcp exposes it as MCP tools. | Unstructured (Apache-2.0); MarkItDown (MIT); Apache Tika (Apache-2.0); MinerU (Apache-2.0 **plus a commercial threshold**); Marker (Apache-2.0 code; model weights carry their own terms†) | Fastest on CPU in its benchmark of 89 PDFs (4,008 pages): 3.1 s/page against MinerU 3.3, Unstructured 4.2 and Marker over 16. No usage threshold, unlike MinerU (100M MAU or USD 20M monthly revenue). Keeps tables and layout that MarkItDown and Tika flatten†. MIT, hosted by LF AI & Data, 70k stars. | On GPU, MinerU is faster (0.21 against 0.49 s/page). The benchmark is Docling's own. Model weights are licensed separately. It reads no diagram semantics. |
-| Code intelligence | **[codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)** (MIT) | The only verified tool that builds cross-repo service edges: HTTP routes matched to their callers with confidence scores, plus gRPC and GraphQL calls. Those edges are what join a service to its runbook and incidents. 162 grammars including Dockerfile, YAML and HCL with Kubernetes, Helm and Terraform extraction. One static binary that runs in CI. SQLite output is easy to export. 17 MCP tools. | Code-Graph-RAG (MIT); SCIP indexers + Zoekt (Apache-2.0); GitNexus (**PolyForm Noncommercial**); Serena (**GPL-3.0** app); Aider repo map (Apache-2.0) | Code-Graph-RAG has compiler-accurate facts but no cross-service edges, and covers 22 languages against 162. SCIP is precise but needs one indexer per language and ships no graph or MCP server. GitNexus and Serena are excluded on license. Aider's repo map is a prompt technique, not a persistent graph. | Written in C, so extending it is costly. Licenses of its bundled grammars and embedding model were not audited. Its schema covers code only, so the export into `edges` is our glue. |
-| Store | **Postgres 17 or 18, one database** | Text, vectors, graph and sync state in one database means one transaction per sync batch: a deleted page loses its chunks, vectors and edges together. One backup, one set of operational skills, and CocoIndex keeps its state there anyway. | Multi-store stacks: PipesHub (MongoDB + Neo4j or ArangoDB + Qdrant + Redis); Onyx (Postgres + Vespa† + Redis†) | No drift between stores after a delete or a failed partial write. A single query can combine vector, keyword and graph results. Fewer services to run and monitor. | A single-node ceiling for vectors and graph. Extension versions must line up; AGE, pgvector and pg_textsearch all support Postgres 17 and 18 (checked 2026-11-03). |
+| Code intelligence | **[codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)** (MIT) | The only verified tool that builds cross-repo service edges: HTTP routes matched to their callers with confidence scores, plus gRPC and GraphQL calls. Those edges are what join a service to its runbook and incidents. 162 grammars including Dockerfile, YAML and HCL with Kubernetes, Helm and Terraform extraction. One static binary that runs in CI. SQLite output is easy to export. 17 MCP tools. | Code-Graph-RAG (MIT); SCIP indexers + Zoekt (Apache-2.0); GitNexus (**PolyForm Noncommercial**); Serena (**GPL-3.0** app); Aider repo map (Apache-2.0) | Code-Graph-RAG has compiler-accurate facts but no cross-service edges, and covers 22 languages against 162. SCIP is precise but needs one indexer per language and ships no graph or MCP server. GitNexus and Serena are excluded on license. Aider's repo map is a prompt technique, not a persistent graph. | Written in C, so extending it is costly. Licenses of its bundled grammars and embedding model were not audited. Its schema covers code only, so the export into `entities` and `edges` is our glue; the export is a documented feature (`artifact.json` carries a schema version) but the project is pre-1.0, so pin the version (§14 finding 8). |
+| Store | **One self-hosted Postgres** | Text, vectors, graph and sync state in one database means one transaction per sync batch: a deleted page loses its chunks, vectors and edges together. One backup, one set of operational skills, and CocoIndex keeps its state there anyway. | Multi-store stacks: PipesHub (MongoDB + Neo4j or ArangoDB + Qdrant + Redis); Onyx (Postgres + Vespa† + Redis†) | No drift between stores after a delete or a failed partial write. A single query can combine vector, keyword and graph results. Fewer services to run and monitor. | A single-node ceiling for vectors. With plain tables and built-in FTS the only extension is pgvector (Postgres 13+), so nothing pins the major version; pg_textsearch, if adopted later, needs 17 or 18. |
 | Vector search | **[pgvector](https://github.com/pgvector/pgvector)** (PostgreSQL License) | Vectors live in the same transaction as the text and the graph, with no extra service. | Qdrant (Apache-2.0; RBAC proprietary); Milvus (Apache-2.0); Weaviate (BSD-3 **plus Weaviate License in `wl/`**); LanceDB (Apache-2.0); OpenSearch kNN (Apache-2.0); Elasticsearch (**AGPL / SSPL / ELv2**); VectorChord (**AGPL or ELv2**) | The only option that keeps vectors inside the single store. Permissive license, 23.6k stars, and widely available on managed Postgres†. | HNSW on one node. At large scale the dedicated engines are faster†; the upgrade path replaces only the `embeddings` table. |
-| Keyword search | **[pg_textsearch](https://github.com/timescale/pg_textsearch)** (PostgreSQL License) | A real BM25 index inside Postgres, with configurable `k1` and `b`. | Built-in Postgres full-text search (`ts_rank` is not BM25); ParadeDB `pg_search` (**AGPL-3.0**); VectorChord-bm25 (**AGPLv3 or ELv2**); OpenSearch (Apache-2.0, separate service); Meilisearch (MIT **plus BUSL-1.1 EE**); Typesense (**GPL-3.0**); Elasticsearch | The only permissively licensed true-BM25 option found that stays inside Postgres. ParadeDB and VectorChord-bm25 are excluded on license; OpenSearch would mean a second store. | Postgres 17 and 18 only. A younger project (4.1k stars), so load-test it. If it disappoints, built-in full-text ranking is a workable fallback, because RRF uses only rank order. |
-| Graph | **[Apache AGE](https://github.com/apache/age)** (Apache-2.0) | An openCypher property graph inside Postgres, so a graph hop can sit in the same SQL statement as vector and BM25 search. | Neo4j Community (**GPL-3.0**); ArangoDB (**BSL 1.1**); Memgraph (**BSL 1.1 + MEL**); FalkorDB (**SSPL**); Kuzu (MIT, **archived**) | The only permissive, maintained option that stays in the same database. Every native graph database on the list is copyleft, source-available or archived. | Smaller community (4.9k stars). Slower than native graph databases on deep traversals†; we plan one-hop queries. Graphiti does not support AGE, which matters when its deferred slice arrives. |
-| Hybrid retrieval | **Hand-written SQL with reciprocal rank fusion (RRF)** | One statement unions vector, BM25 and graph-hop candidates and fuses them by rank. | LlamaIndex (MIT), Haystack (Apache-2.0) and LangChain (MIT) retrievers; LightRAG query modes (MIT); Graphiti search recipes (Apache-2.0) | One round trip and no framework layer to debug. RRF combines ranks, so vector, BM25 and graph scores need no calibration against each other. Frameworks pay off mainly when switching between stores, which the single-store design avoids. | We own the query and its tuning. No off-the-shelf reranker; a cross-encoder can be added later†. |
+| Keyword search | **Built-in Postgres full-text search** on day one; **[pg_textsearch](https://github.com/timescale/pg_textsearch)** (PostgreSQL License) when measured recall requires BM25 (§14 finding 2) | Results are fused by rank (RRF), so the keyword leg needs a sensible ordering rather than calibrated scores, and built-in FTS gives that with no extension. pg_textsearch adds a real BM25 index with configurable `k1` and `b` once keyword recall is shown to be the bottleneck. | Built-in FTS alone (`ts_rank` is not BM25); ParadeDB `pg_search` (**AGPL-3.0**); VectorChord-bm25 (**AGPLv3 or ELv2**); OpenSearch (Apache-2.0, separate service); Meilisearch (MIT **plus BUSL-1.1 EE**); Typesense (**GPL-3.0**); Elasticsearch | The only permissively licensed true-BM25 option found that stays inside Postgres. ParadeDB and VectorChord-bm25 are excluded on license; OpenSearch would mean a second store. | Built-in ranking ignores corpus-wide document frequency, so long or repetitive documents can rank too high; that is what the recall measurement checks. pg_textsearch is Postgres 17 and 18 only, needs `shared_preload_libraries`, and is a younger project (4.1k stars). |
+| Graph | **Plain `entities` and `edges` tables**, recursive CTEs for multi-hop (§14 finding 1) | The retrieval contract is one graph hop, which is a join; two or three hops are a recursive CTE. Plain tables are CocoIndex's existing Postgres target, join directly with vector and keyword results, and need no extension. | Apache AGE (Apache-2.0); Neo4j Community (**GPL-3.0**); ArangoDB (**BSL 1.1**); Memgraph (**BSL 1.1 + MEL**); FalkorDB (**SSPL**); Kuzu (MIT, **archived**) | No `agtype` casting in the query, no custom CocoIndex target, nothing to install. Every native graph database on the list is copyleft, source-available or archived; AGE is permissive but more engine than one hop needs. | Variable-length path queries are awkward in SQL. When they are needed, a graph engine returns: AGE (Apache-2.0, fine on self-hosted Postgres) or Neo4j alongside Graphiti. |
+| Hybrid retrieval | **Hand-written SQL with reciprocal rank fusion (RRF)** | One statement unions vector, keyword and graph-hop candidates and fuses them by rank. | LlamaIndex (MIT), Haystack (Apache-2.0) and LangChain (MIT) retrievers; LightRAG query modes (MIT); Graphiti search recipes (Apache-2.0) | One round trip and no framework layer to debug. RRF combines ranks, so vector, keyword and graph scores need no calibration against each other. Frameworks pay off mainly when switching between stores, which the single-store design avoids. | We own the query and its tuning. No off-the-shelf reranker; a cross-encoder can be added later†. |
 | Gateway | **Our own thin MCP server and REST API**, on the official [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) (MIT) | One read-only surface over the whole unified store, with caller authentication, audit and rate limits. | Onyx MCP server; PipesHub `mcp-server`; Graphiti MCP server; codebase-memory-mcp's own tools; live-access servers such as github-mcp-server | Onyx's and PipesHub's servers see only their own index. Graphiti's has no authentication and exposes `clear_graph` to any caller. codebase-memory-mcp sees only code. Ours is the only one that sees code, documents, chat, schemas and diagrams together. | Code we write and maintain, though small: a handful of tools over one SQL function. |
+| Entity resolution | **Own component** (§14 finding 5) | The join key between sources is identity: the same service is `payments-api` in GitLab, "Payments API" in Confluence, `payments` in a Kubernetes manifest and `#payments-oncall` in Slack. Nothing off the shelf resolves that across our sources. | Graphiti's LLM entity deduplication (Apache-2.0); CocoIndex's embedding-based deduplication of extracted entities (Apache-2.0); cognee's dlt schema graph (Apache-2.0) | Deterministic rules (repository URLs on pages, service names from Kubernetes and Terraform via codebase-memory-mcp's YAML and HCL extraction, channel naming conventions) are explainable and cheap; LLM matching is added only for the long tail. | The rules are ours to write and maintain, and precision must be measured: a wrong merge joins the wrong runbook to a service. |
+
+**Why not take every SaaS connector from Onyx?** It is a valid alternative. Onyx's connector contract is richer: a time-window poll (`PollConnector.poll_source`), an ID-only listing for finding deletions (`SlimConnector.retrieve_all_slim_docs`) and resumable checkpoints (`CheckpointedConnector`). But the connectors are not a standalone package. Confluence and Slack import Onyx's database enums, app config, access models and indexing heartbeat; SharePoint also imports its file store and file processing. Taking them all means vendoring the connector folder, writing stand-ins for about 10 Onyx core modules, and merging upstream changes by hand. Switch to Onyx for all connectors if a test shows unstructured-ingest missing edits or deletions for a source we need, or if we end up forking more than two or three Onyx connectors anyway.
 
 ### 13.2 Deferred components (chosen now for when a ceiling is hit)
 
@@ -730,6 +736,141 @@ Why each component in the §12 stack was chosen, what it was compared against, a
 | Durable sync jobs | **[Temporal](https://github.com/temporalio/temporal)** (MIT) | Sync needs multi-step jobs with retries and cursors that survive a crash, such as a large backfill. | Dagster (Apache-2.0); Airflow (Apache-2.0); Prefect (Apache-2.0); Kestra (Apache-2.0); Hatchet (MIT) | Durable execution: a workflow resumes from its last completed step after a failure†. MIT license, 24.1k stars. | Another cluster to run. Dagster's asset model is the stronger choice if lineage matters more than durability. |
 | Regex search across repositories | **[Zoekt](https://github.com/sourcegraph/zoekt)** (Apache-2.0) | Agents need substring or regex search across every repository. | codebase-memory-mcp's FTS5 (per-repo BM25, no regex); ripgrep over checkouts (no index); GitNexus (**PolyForm Noncommercial**) | A trigram index built for multi-repo code, with symbol-aware ranking from ctags. Maintained by Sourcegraph since 2017. | universal-ctags, which it uses for ranking, is **GPL-2.0**, so run it as an external binary. |
 | Large-scale vectors | **[Qdrant](https://github.com/qdrant/qdrant)** or **[OpenSearch](https://github.com/opensearch-project/OpenSearch)** (both Apache-2.0) | Vectors outgrow single-node pgvector HNSW. | Milvus (Apache-2.0); Weaviate (BSD-3 **plus Weaviate License**); Vespa (Apache-2.0); Elasticsearch (**AGPL / SSPL / ELv2**) | Qdrant offers sparse plus dense hybrid search and payload filters; pick it if only vectors move. OpenSearch combines BM25 and kNN in one engine; pick it if keyword search moves too. | Breaks the single-transaction property, so deletes must be propagated to two stores. Qdrant's RBAC is proprietary, which does not matter without per-document permissions. |
+| Database change capture | **[Debezium](https://github.com/debezium/debezium)** (Apache-2.0) | Rows from an operational database are indexed (§14 finding 4) | CocoIndex Postgres source (LISTEN/NOTIFY, Postgres only, one changelog source); polling on `updated_at` columns; Airbyte CDC (**ELv2**) | Log-based capture for both Postgres and MySQL without adding columns to application tables; polling misses hard deletes. Mature (13.3k stars). | Runs on Kafka Connect or Debezium Server†. Without a permission gate, choose the tables to index explicitly. |
+| Graph engine | **[Apache AGE](https://github.com/apache/age)** (Apache-2.0), or Neo4j Community (**GPL-3.0**) alongside Graphiti | Queries need variable-length paths that recursive CTEs make awkward (§14 finding 1) | Memgraph (**BSL 1.1 + MEL**); FalkorDB (**SSPL**); ArangoDB (**BSL 1.1**) | AGE is permissive and stays inside the self-hosted Postgres; Neo4j is what Graphiti supports. | AGE's `agtype` must be cast to join relational results; Neo4j is GPL and a second store. |
+
+## 14. Design review of the §12 stack (2026-11-03)
+
+An adversarial pass over each component in §12 and the architecture diagram: for each, the attempt to break it, and a verdict. Facts checked on 2026-11-03 are cited inline; † marks claims not verified in this research.
+
+### 14.1 Findings, most serious first
+
+**1. Apache AGE is more than the design uses, and it blocks managed Postgres. Verdict: change.**
+The retrieval contract in §12 is one graph hop. One hop is a join; two or three hops are a recursive CTE. AGE earns its keep for variable-length path queries and Cypher ergonomics, neither of which the design calls for. Its `cypher()` function returns `agtype`, which has to be cast before it can join vector and BM25 results, so the "one SQL statement" gets harder, not easier. CocoIndex has Postgres-table, Neo4j and FalkorDB targets but no AGE target, so writing edges into AGE is custom code, while writing them into a plain table is CocoIndex's existing target. Hosting is decisive: AGE is absent from the Amazon RDS extension tables for PostgreSQL 15 to 19 and from the Cloud SQL extension list, and GA only on Azure Database for PostgreSQL Flexible Server (May 2025). Apache labels 1.7.0 "stable"; the `-rc0` release tags are its artifact convention, not a maturity signal. **Recommendation:** plain `entities(id, kind, name)` and `edges(src_id, dst_id, type, props jsonb)` tables, recursive CTEs for multi-hop. Revisit a graph engine when queries need variable-length paths, which is also when Graphiti arrives.
+
+**2. pg_textsearch is the right BM25 engine on the wrong day. Verdict: defer behind a measurement.**
+Checked: v1.0 went GA on 2026-04-03 under the PostgreSQL License; Tiger Cloud calls v1.1.0 production-ready; Cloud SQL and AlloyDB offer it in public preview (announced 2026-09-21); it is absent from the RDS tables; it needs `shared_preload_libraries`, so a restart and self-managed configuration; PostgreSQL 17 and 18 only. Because §12 fuses results by rank (RRF), built-in full-text search (`ts_rank_cd`) is an adequate day-one keyword leg. §13 promoted pg_textsearch to day one; that was premature. **Recommendation:** start with built-in FTS, measure keyword recall on a real Confluence space, switch when it is the bottleneck. pg_textsearch stays the chosen BM25 engine in §13, with that trigger.
+
+**3. CocoIndex wrapping unstructured-ingest is the largest integration risk, and the seam does not exist yet. Verdict: decide in the first spike.**
+Both are pipeline frameworks with their own opinions. unstructured-ingest runs indexer → downloader → partition → chunk → embed → upload and carries per-record versions; CocoIndex runs sources → transforms → targets with fingerprints and live update. Checked: unstructured-ingest's Postgres destination (`sql/postgres.py`) has no vector or embedding handling, so it cannot write pgvector on its own; CocoIndex's Postgres target can. Neither framework alone gives connectors, fingerprints, deletion propagation and a pgvector target. Three shapes work: (a) unstructured-ingest's indexer and downloader stages only, exposed as CocoIndex sources, with CocoIndex owning chunking, embedding and writes; (b) CocoIndex alone with custom sources on the vendor SDKs; (c) unstructured-ingest alone with a custom Postgres writer and a `documents`-table diff for deletions, losing reprocess-on-pipeline-change. **Lean:** (a), because it keeps both vendors' maintained code and puts the one piece of glue at a thin seam. The diagram currently draws that seam as if it were built.
+
+**4. Debezium is drawn as day one for a decision never taken. Verdict: move to the deferred strip.**
+Whether row data from operational databases is indexed at all is undecided; Debezium brings Kafka Connect or Debezium Server† with it. Default to schema only via tbls on a schedule. Note, without any permission gate, operational rows (customer records) are the likeliest source of accidental exposure, so if row data is ever indexed, choose the tables explicitly.
+
+**5. The ontology and entity resolution have no owner. Verdict: add a built component.**
+The diagram's caption promises to join a service's code to its docs and runbooks. The join key is identity, and the same service is `payments-api` in GitLab, "Payments API" in Confluence, `payments` in a Kubernetes manifest and `#payments-oncall` in Slack. No component resolves these. codebase-memory-mcp's cross-service edges work within code and do not know the Confluence page. **Recommendation:** an `entities` table with aliases, filled by deterministic rules first (repository URLs found in pages, service names from Kubernetes and Terraform via codebase-memory-mcp's YAML and HCL extraction, channel naming conventions), LLM-assisted matching later. This is the intellectual core of the platform and belongs on the diagram as a built component.
+
+**6. Incidents appear in the caption but not in the sources. Verdict: fix one or the other.**
+No PagerDuty, Opsgenie or Grafana source is drawn, and no verified open-source connector for them was found (§10 gap 6). Either add a custom incident source or remove "incidents" from the caption until one exists. Runbooks are covered by Confluence and Git.
+
+**7. The embedding model and chunking are unspecified. Verdict: add a one-line decision.**
+`embeddings` exists on the diagram without a model. The choice sets cost, data residency and re-embedding time. **Lean:** one locally hosted open-weights text model through CocoIndex's embedder, applied to documents and chat only. Code is not embedded in Postgres; codebase-memory-mcp keeps its own per-repository FTS5 and embedding index, and only entities and edges are exported. That avoids mixing a code model and a text model in one vector column.
+
+**8. codebase-memory-mcp export is a supported feature, not a hack, but pin it. Verdict: keep with conditions.**
+Checked: the README documents an export (`VACUUM INTO`, zstd-compressed SQLite, with `artifact.json` carrying a schema version) and references a breaking schema change (#768) with a skip policy for older indexes. The latest release is v0.12.1 (2026-10-16), pre-1.0. Pin the version, write the exporter against the `artifact.json` schema version with a fixture, and export a minimal set (service, route, caller, file). Its `query_graph` and `get_architecture` MCP tools may be a more stable surface than raw tables†.
+
+**9. Docling: scope it to attachments and estimate the backfill. Verdict: keep.**
+At its own benchmark figure of 3.1 s/page on CPU, 5,000 attachment pages cost about 4.3 CPU-hours; 500,000 pages cost about 18 CPU-days per core. Route Confluence HTML and Slack text through plain HTML-to-Markdown conversion, not Docling. The diagram already says "parses attachments"; the report lacked the estimate.
+
+**10. Gateway. Verdict: keep, with two additions.**
+A read-only tool surface over one SQL function is right; never expose raw SQL to agents, since prompt injection then becomes corpus exfiltration even without per-document permissions. Add response-size caps and pagination limits so an agent cannot page through the whole corpus. Start with API keys; the MCP specification's OAuth flow is more work† and can follow.
+
+**11. One Postgres. Verdict: keep, and it becomes portable only if findings 1 and 2 are applied.**
+With plain tables, built-in FTS and pgvector, the store runs on RDS, Cloud SQL, Azure or self-hosted (pgvector is on all three; checked for RDS and Cloud SQL). With AGE and pg_textsearch, no single managed provider offers both today: Azure has AGE but pg_textsearch was not found there; Cloud SQL has pg_textsearch in preview but not AGE; RDS has neither.
+
+**12. Unchanged after review:** tbls (schema only), the Teams fork from Onyx, the unstructured-ingest Slack-deletion test (§12), Temporal, Zoekt, Qdrant or OpenSearch as the vector upgrade. On Graphiti's backend: running unmodified Neo4j Community as a separate server is common practice under GPL-3.0; the legal review is about that arrangement, not about linking.
+
+### 14.2 Verdict table
+
+| Component | Verdict | Change |
+|---|---|---|
+| unstructured-ingest + CocoIndex | Decide in spike | Pick shape (a), (b) or (c) from finding 3 before drawing the seam |
+| Teams from Onyx MIT core | Keep | — |
+| tbls | Keep | — |
+| Debezium | Defer | Deferred strip; trigger: row data from an operational database is indexed |
+| Docling | Keep | Attachments only; add backfill estimate |
+| codebase-memory-mcp | Keep | Pin version; exporter against `artifact.json` schema version; minimal edge set |
+| One Postgres 17/18 | Keep | Portable only with the two changes below |
+| pgvector | Keep | Decide the embedding model (finding 7) |
+| pg_textsearch | Defer | Built-in FTS first; switch on measured recall gap |
+| Apache AGE | Change | Plain `entities` and `edges` tables; recursive CTE |
+| Hand-written SQL + RRF | Keep | — |
+| Gateway | Keep | Response caps; API keys first |
+| Entity resolution | Add | New built component; deterministic rules first |
+| Incident source | Fix | Add a custom source or drop "incidents" from the caption |
+| Graphiti, Temporal, Zoekt, Qdrant/OpenSearch (deferred) | Keep | — |
+
+### 14.3 Diagram changes proposed
+
+1. Store: `edges` becomes a plain table ("recursive CTE for 2–3 hops"); add `entities` (aliases); `chunks` label becomes "built-in FTS; BM25 upgrade gated".
+2. Sources: "Postgres · MySQL" becomes "tbls schema (rows deferred)"; Debezium moves to the deferred strip.
+3. Ingest: add a dashed "Entity resolution (built)" box between sync and store.
+4. Caption: remove "incidents" until an incident source exists.
+5. Deferred strip: add pg_textsearch and Debezium with their triggers.
+
+### 14.4 Applied (2026-11-03)
+
+All five changes were applied to the diagram, and §12 and §13 were updated to match. Postgres will be self-hosted, so the managed-hosting constraints in findings 1, 2 and 11 do not apply; the plain-table and built-in-FTS choices stand on simplicity and measurement alone, and both AGE and pg_textsearch remain available later without a platform change. The deferred strip also gained a "graph engine" entry so the return path for AGE or Neo4j stays visible. Still open from this review: the pipeline seam (finding 3) and the embedding model (finding 7), both to be settled in the first spike.
+
+## 15. Entities and entity resolution, explained
+
+An **entity** is a real-world thing the organisation talks about: a service, a repository, a team, a person, a database table, a runbook, a diagram. It is different from the text itself. A Confluence page or a Slack thread is split into **chunks**, the pieces of text that search finds. Chunks *mention* entities, and **edges** connect entities to each other.
+
+### 15.1 Example: one service, four names
+
+The payments service appears in every source under a different name:
+
+| Where | What it is called |
+|---|---|
+| GitLab | `payments-api` (repository name) |
+| Confluence | "Payments API" (page title) |
+| Kubernetes manifest | `payments` (deployment name) |
+| Slack | `#payments-oncall` (channel) |
+
+To a computer these are four unrelated strings. In the `entities` table they become one row with four aliases:
+
+| id | kind | name | aliases |
+|---|---|---|---|
+| 42 | service | Payments API | `payments-api`, `payments`, `#payments-oncall` |
+
+The `edges` table then connects entity 42 to other entities:
+
+- 42 **implemented in** repository `gitlab.com/acme/payments-api`
+- 42 **calls** entity 57 (Ledger service), found by codebase-memory-mcp from an HTTP call in the code
+- 42 **documented by** the Confluence page "Payments API runbook"
+- 42 **reads** table `payments.transactions`, found from tbls plus the code's database models
+- 42 **discussed in** `#payments-oncall`
+- 42 **owned by** the Payments team
+
+### 15.2 Why it matters
+
+Take the question "How do I roll back payments after a bad deploy?"
+
+- **Without entities:** search returns whatever text best matches the words. The runbook appears only if its wording happens to match.
+- **With entities:** search finds a chunk mentioning `payments`, recognises it as entity 42, and follows one edge to the runbook, the repository, and the downstream Ledger service a rollback might affect. That single hop is the "graph hop" in the query on the architecture diagram.
+
+### 15.3 Entity resolution
+
+**Entity resolution** is the work of recognising that `payments-api`, "Payments API", `payments` and `#payments-oncall` are the same thing, so they become one row instead of four. It is a component we build (§12, §14 finding 5):
+
+1. **Rules first.** A Confluence page that links to `gitlab.com/acme/payments-api` is about that repository. A Kubernetes deployment named `payments` built from that repository is the same service. A channel named `#<service>-oncall` belongs to that service.
+2. **An LLM for the long tail**, for names the rules cannot match, such as "the money service".
+
+The risk is a wrong merge: if two services are merged into one, a question about one returns the other's runbook. Match precision has to be measured, not assumed.
+
+### 15.4 Entity kinds and where they come from
+
+| Kind | Created by |
+|---|---|
+| service | codebase-memory-mcp (from code, Kubernetes and Terraform files) |
+| repo | GitLab and GitHub connectors |
+| table | tbls |
+| person | Slack and Teams users, commit authors |
+| team | Team and channel naming conventions, ownership files† |
+| doc, runbook | Confluence, SharePoint and Drive connectors |
+| diagram | The Draw.io and Lucidchart parser |
+
+Each connector or indexer creates the entities it knows about; entity resolution then links those separate records together.
 
 ## Appendix: verification provenance
 
