@@ -2,6 +2,8 @@
 
 *Research date: 2026-11-02. Licenses, star counts and last-push dates are a snapshot from the GitHub API on that date.*
 
+*Decision record added 2026-11-03: see §12. Per-document permissions and Jira are out of scope. Sections that discuss them are kept as landscape information and are marked superseded in §12.*
+
 ## How to read this report
 
 Not every project here was checked to the same depth. Each project carries one of these marks:
@@ -635,6 +637,63 @@ These options are presented for comparison; no single stack is being recommended
   2. Run a bake-off between codebase-memory-mcp and Code-Graph-RAG on two internal repos.
   3. Write a Graphiti versus LightRAG proof of concept on one Confluence space plus its Jira project.
   4. Have legal review the Neo4j GPL choice against Apache AGE.
+
+## 12. Decision record (2026-11-03)
+
+### Decisions
+
+1. **No per-document permission gating.** Any caller the gateway admits can read anything that was indexed. Access control is (a) which spaces, channels, drives and repositories are connected, which should be org-wide-readable sources only, and (b) who holds a gateway credential.
+2. **Jira is out of scope.** No project-management data is ingested. Jira connectors listed in §2 and the "ticket" entity in the proposed ontology are informational only.
+3. **Option B is the chosen direction:** permissively licensed libraries composed around one Postgres, exposed through a thin gateway we write.
+
+### What these decisions remove
+
+| Removed | Why | Sections now superseded |
+|---|---|---|
+| Authorization layer: SpiceDB / OpenFGA, `acl` and `principals` tables, cross-system identity mapping, needtoknow, VaultRAG, langchain-spicedb | No per-document filtering | §2.12, the Authorization row of §6, the Permission-aware row of §7, ideas 1–5 of §9, gap 1 and the SSO/RBAC part of gap 9 in §10 |
+| Forking PipesHub's `RECORD_LEVEL` connectors | They were chosen because they export ACLs. `unstructured-ingest` as a plain dependency now covers Confluence, Slack, SharePoint, Drive, GitHub, GitLab and SQL | §4.1 "Reuse mode", §6 Connector row |
+| Onyx's main disqualifier | Its EE boundary was permission sync. The MIT core (54 connectors, hybrid search, 30-minute polling and pruning, MCP server) is now a viable deployable alternative | §4.2 limitations, Option C in §7 |
+| Jira connector work and the ticket entity | Out of scope | Jira mentions in §2.1, §2.2, §4.1, §4.2, §10 gap 4 |
+
+Gaps that remain custom regardless: diagram parsing (§10 gap 2), database schema to graph (gap 3), one ontology across sources (gap 4), the sync control plane (gap 5), ops data (gap 6), team expertise (gap 7), the gateway minus its authorization parts (gap 8), retrieval evaluation (gap 10).
+
+### Chosen stack
+
+| Layer | Pick | Ceiling → upgrade |
+|---|---|---|
+| Connectors | `unstructured-ingest` (Apache-2.0) as a dependency. Teams and meeting transcripts forked from Onyx's MIT core | — |
+| Incremental sync | CocoIndex (Apache-2.0): fingerprint each record, process only changes, propagate deletes, flow state in Postgres | Durable multi-step jobs → Temporal |
+| Database sources | tbls for schema, Debezium for change capture | — |
+| Document parsing | Docling (MIT) | — |
+| Code intelligence | codebase-memory-mcp (MIT) per repository; its SQLite graph exported into the shared `edges` table | Regex search across every repo → Zoekt |
+| Store | One Postgres: `chunks` (tsvector, BM25), `embeddings` (pgvector HNSW), `edges` (Apache AGE), `documents` (sync state) | Vectors outgrow one node → Qdrant or OpenSearch, replacing the `embeddings` table only |
+| Retrieval | One SQL statement: vector similarity ∪ BM25 ∪ one graph hop, fused with RRF, returning chunks with source links | — |
+| Gateway | Own thin MCP server + REST API: authenticates callers (API key or SSO), tool allow-list, read-only tools, audit, rate limits | — |
+| Conversational knowledge | Deferred. Graphiti episodes for Slack, transcripts and tacit knowledge, once a backend license is cleared (Neo4j is GPL, FalkorDB is SSPL) | — |
+
+Diagram: https://claude.ai/artifact/1Z5gMQM7iKKM671uoh2RQu
+
+### Alternative kept open
+
+Deploy Onyx's MIT core unmodified for documents and chat, use its built-in MCP server, and build only the code graph and the `edges` ontology beside it. This gives a working search product in days. The costs are two indexes (Onyx's Vespa plus our Postgres graph), a heavier footprint (about eight containers), and no single query that joins code to documents. Choose it if time to first demo matters more than one unified store; choose the stack above if the cross-source graph is the point.
+
+### Custom work remaining
+
+- The gateway: MCP plus REST, caller authentication, tool allow-list, audit. No destructive tools exposed.
+- Connector gaps: Teams and transcripts (fork from Onyx MIT); a Draw.io parser (mxGraph XML) and a Lucidchart connector (Lucid REST API).
+- The export from codebase-memory-mcp's SQLite graph into `edges`.
+- The `edges` schema: service, repo, team, person, doc, incident, runbook, table, diagram.
+- Ops data and team expertise (§10 gaps 6 and 7), unchanged.
+
+All of this is glue. None of it is security-critical.
+
+### Verify before building
+
+- `unstructured-ingest`: read the Confluence, Slack and SharePoint connectors for change detection and deletion behaviour; neither is documented (§4.5).
+- codebase-memory-mcp: confirm the SQLite schema is stable enough to export from, and audit the licenses of its bundled grammars and embedding model (§4.4).
+- CocoIndex: confirm the Postgres LISTEN/NOTIFY change capture, which rests on one changelog entry (§4.6).
+- If LightRAG is adopted later for document GraphRAG: confirm its Postgres storage classes, including the Apache AGE graph backend, which were not verified in this research.
+- Onyx Teams connector: check its dependencies before forking it out of the MIT core.
 
 ## Appendix: verification provenance
 
