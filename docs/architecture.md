@@ -1,169 +1,156 @@
 # Knowledge base architecture
 
-*2026-11-03. These diagrams are drawn in Mermaid, which GitHub renders in place. The design behind them is in [design.md](design.md), and the reasons for each component are in the [research report](../research/oss-landscape-2026-11.md), §12–15. A hand-drawn version of the first diagram is in [research/architecture.html](../research/architecture.html).*
+*2026-11-04. These diagrams are drawn in Mermaid, which GitHub renders in place. The design behind them is in [design.md](design.md). The reasons for each component are in the [research report](../research/oss-landscape-2026-11.md) §16, which simplified the 2026-11-03 stack.*
 
-Legend: a solid box is a reused open-source component, a dashed box is code we write or fork, and a cylinder is a Postgres table.
+Legend: a solid box is a reused open-source component or an external system, a dashed box is code we write, and a cylinder is stored data.
 
 ## 1. System
 
-Every source feeds one sync process, `kb sync`, and that process writes to one Postgres. Agents read the knowledge base through one read-only gateway.
+Five sources feed one command, `kb sync`, which writes one SQLite file. Agents read it by running `kb search`, which a skill tells them to do. There is no server.
 
 ```mermaid
 flowchart LR
   subgraph sources["Sources"]
     direction TB
-    git["GitLab · GitHub<br/>repositories"]
-    docs["Confluence · SharePoint<br/>Google Drive"]
-    slack["Slack"]
-    teams["Teams · Zoom<br/>Gong · Fireflies"]
+    git["Git repositories<br/>Markdown docs · runbooks · ADRs"]
+    conf["Confluence<br/>Cloud or Data Center"]
     db[("Postgres · MySQL<br/>schema only")]
-    diag["Lucidchart"]
+    lucid["Lucidchart"]
+    up["Uploads folder<br/>transcripts · PDF · Word · slides"]
   end
 
-  subgraph ingest["Ingest · kb sync · CocoIndex v1, one app per source"]
+  subgraph ingest["kb sync · one process"]
     direction TB
-    clone["git clone<br/>.kb/repos"]
-    ui["unstructured-ingest<br/>indexer + downloader"]
-    onyx["Onyx MIT fork<br/>Teams + transcripts"]
-    tbls["tbls<br/>schema to JSON"]
-    dparse["Diagram parser<br/>Draw.io XML · Lucid API"]
-    cbm["codebase-memory-mcp<br/>code graph"]
-    proc["Convert · chunk · embed<br/>markdownify · Docling · bge-m3"]
-    er["Entity resolution<br/>rules + kb.toml aliases"]
+    conn["Connectors<br/>git · REST · tbls doc · folder walk<br/>list id and version, fetch only changes"]
+    conv["Convert to Markdown<br/>MarkItDown · VTT cleanup"]
+    chunk["Chunk by heading<br/>with title and section"]
+    emb["Embed<br/>granite-embedding-small"]
   end
 
-  subgraph store["Postgres 17 + pgvector · the one store"]
+  subgraph store[".kb/kb.sqlite · one file"]
     direction TB
-    documents[("documents")]
-    chunks[("chunks · full-text")]
-    embeddings[("embeddings · HNSW")]
-    edges[("edges")]
-    entities[("entities · aliases")]
+    documents[("documents<br/>id · version · body")]
+    chunks[("chunks<br/>FTS5 · BM25")]
+    vec[("chunk_vec<br/>sqlite-vec")]
   end
 
   subgraph access["Access"]
     direction TB
-    gw["Gateway<br/>kb mcp over stdio · kb serve over HTTP<br/>read-only tools · caps · audit"]
-    agents["Claude Code · agents · apps"]
+    skill["kb skill<br/>.claude/skills · .agents/skills"]
+    cli["kb search · kb show"]
+    agents["Claude Code · Codex · Copilot"]
   end
 
-  deferred["Deferred until a ceiling is hit:<br/>Graphiti · Temporal · Zoekt · Qdrant or OpenSearch<br/>pg_textsearch · Debezium · Apache AGE or Neo4j"]
+  deferred["Deferred until needed:<br/>entities and aliases · shared index built in CI<br/>MCP server · LLM summary pages · Docling"]
 
-  git --> clone
-  docs --> ui
-  slack --> ui
-  teams --> onyx
-  db --> tbls
-  diag --> dparse
-  clone --> cbm
-  clone --> proc
-  clone -.->|".drawio files"| dparse
-  ui -.->|".drawio files"| dparse
-  ui --> proc
-  onyx --> proc
-  tbls --> proc
-  dparse --> proc
-  proc --> documents
-  proc --> chunks
-  proc --> embeddings
-  proc --> edges
-  cbm -->|"services · routes · calls"| edges
-  edges --> er
-  er --> entities
-  gw -->|"one SQL query: vector + keyword + graph hop, fused by RRF"| store
-  agents -->|"MCP or REST"| gw
+  git --> conn
+  conf --> conn
+  db --> conn
+  lucid --> conn
+  up --> conn
+  conn --> conv
+  conv --> chunk
+  chunk --> emb
+  conv --> documents
+  chunk --> chunks
+  emb --> vec
+  agents -->|"reads"| skill
+  agents -->|"runs"| cli
+  cli -->|"one SQL query: BM25 + vector, fused by RRF"| store
 
   classDef built stroke-dasharray: 6 4
   classDef later stroke-dasharray: 2 4
-  class onyx,dparse,proc,er,gw built
+  class conn,chunk,skill,cli built
   class deferred later
 ```
 
-Draw.io has no source of its own: `.drawio` files are picked up wherever they already live, in git repositories and on Drive. Code is not embedded. codebase-memory-mcp keeps its own per-repository index, and only its services, routes and calls are exported into `edges`.
+Code itself is not indexed. Agents search the code they work in with their own tools, and other repositories contribute only their docs.
 
 ## 2. One sync run, for one record
 
-CocoIndex v1 runs one processing component per source record. It remembers each component's key, `(identifier, version)`, so a record whose version has not changed is skipped without being downloaded. A record that is no longer listed is not mounted, and CocoIndex deletes the rows it produced.
+Every connector lists the id and version of every record. A record whose version matches the stored one is skipped without being fetched. A record that is no longer listed is deleted, but only after a complete listing.
 
 ```mermaid
 sequenceDiagram
   autonumber
   participant K as kb sync
   participant C as Connector
-  participant A as Source API
+  participant S as Source
   participant P as Convert, chunk, embed
-  participant DB as Postgres
+  participant DB as kb.sqlite
   K->>C: list records
-  C->>A: list IDs and versions only
-  A-->>C: records
-  C-->>K: identifier and version for each record
-  Note over K: Same version as last run: skip.<br/>Not listed any more: delete its rows.
-  K->>C: download a new or changed record
-  C->>A: fetch content
-  A-->>C: file
-  C-->>P: local file path
-  P->>P: HTML to Markdown or Docling, then split and embed with bge-m3
-  P->>DB: upsert documents, chunks, embeddings, edges
-  Note over K,DB: After every source has run
-  K->>DB: entity resolution rebuilds entities from edges and rules
+  C->>S: ids and versions only
+  S-->>C: every record
+  C-->>K: id and version for each record
+  Note over K,DB: Same version as stored, so skip it
+  K->>C: fetch a new or changed record
+  C->>S: download its content
+  S-->>C: page, file, schema or diagram
+  C-->>P: Markdown text
+  P->>DB: one transaction replaces the document, its chunks and vectors
+  Note over K,DB: After a complete listing, delete records no longer listed.<br/>More than 20 percent of a source needs --rebuild.
 ```
 
 ## 3. One question, end to end
 
-The gateway embeds the question with the same model that embedded the documents. It then runs one SQL function that unions three candidate lists and fuses them by rank.
+The question is embedded with the same model that embedded the chunks. One SQL statement then fuses the keyword and vector results by rank.
 
 ```mermaid
 sequenceDiagram
   autonumber
-  participant U as Agent in the repo
-  participant G as kb mcp
-  participant M as bge-m3 in-process
-  participant DB as Postgres
-  U->>G: search "how do I roll back payments after a bad deploy"
-  G->>M: embed the question
-  M-->>G: 1024-dimension vector
-  G->>DB: kb_search(question, vector, k)
-  Note over DB: Vector top 50, plus full-text top 50,<br/>plus documents one edge away from the top hits.<br/>Fused by reciprocal rank (RRF).
-  DB-->>G: chunks with titles, URLs and entities
-  G-->>U: at most k results, snippets capped, source links
-  U->>G: get_entity "payments" or neighbors
-  G->>DB: entities and edges lookup
-  DB-->>G: aliases, linked repos, runbooks, channels
-  G-->>U: capped list
+  participant A as Agent in the repo
+  participant K as kb CLI
+  participant M as Embedding model
+  participant DB as kb.sqlite
+  A->>A: the kb skill matches a question about our systems
+  A->>K: kb search "how do I roll back payments after a bad deploy"
+  K->>M: embed the question
+  M-->>K: 384-dimension vector
+  K->>DB: one SQL statement
+  Note over DB: BM25 top 50 plus vector top 50,<br/>fused by reciprocal rank (RRF)
+  DB-->>K: chunks with title, section and URL
+  K-->>A: top hits with ids and snippets
+  A->>K: kb show confluence:PAY:123456
+  K-->>A: the whole document
+  A->>A: answer, citing titles and URLs
 ```
 
-## 4. What `kb-init` sets up in a repository
+## 4. What `kb init` sets up in a repository
 
-`kb-init` turns the repository it runs in into a knowledge-base project. Configuration that is safe to share is committed. Secrets and local state go under the gitignored `.kb/` folder, and Postgres runs in Docker.
+Configuration that is safe to share, and the skill, are committed. Tokens, the index and logs stay in the gitignored `.kb/` folder. The embedding model is cached once per machine, and the uploads folder can be anywhere.
 
 ```mermaid
 flowchart TB
   subgraph repo["Your repository"]
     direction TB
-    toml["kb.toml<br/>sources and settings, no secrets<br/>committed"]
-    mcp[".mcp.json<br/>runs kb mcp over stdio, no secrets<br/>committed"]
+    toml["kb.toml<br/>sources, model and revision, no secrets<br/>committed"]
+    skills[".claude/skills/kb · .agents/skills/kb<br/>the kb skill · committed"]
+    pointer["AGENTS.md · CLAUDE.md<br/>a short pointer to kb search · committed"]
     subgraph local[".kb/ · gitignored"]
       direction TB
-      env[".kb/.env · mode 0600<br/>PATs and keys, local Postgres password"]
-      state["cocoindex.db · repos/ · cbm/ · schema/ · logs/"]
+      env[".kb/.env · mode 0600<br/>tokens"]
+      index[("kb.sqlite")]
+      state["repos/ · schema/ · logs/kb.jsonl · sync.lock"]
     end
   end
 
-  subgraph docker["Docker · compose project kb-name"]
-    pg[("Postgres 17 + pgvector<br/>bound to 127.0.0.1 only<br/>named volume for data")]
-  end
+  uploads["Uploads folder<br/>any path, e.g. a synced OneDrive folder"]
+  cache[("Model cache<br/>HF_HOME, once per machine")]
 
-  init["kb-init"] -->|"writes"| toml
-  init -->|"merges"| mcp
+  init["kb init"] -->|"writes"| toml
+  init -->|"writes"| skills
+  init -->|"adds to"| pointer
   init -->|"writes after checking each token"| env
-  up["kb up"] -->|"starts"| pg
+  init -->|"downloads the model into"| cache
   sync["kb sync"] -->|"reads"| toml
   sync -->|"reads"| env
+  sync -->|"reads"| uploads
+  sync -->|"loads the model from"| cache
   sync -->|"keeps"| state
-  sync -->|"writes"| pg
-  agent["Claude Code in this repo"] -->|"launches"| mcp
-  mcp -->|"queries"| pg
+  sync -->|"writes"| index
+  agent["Claude Code · Codex · Copilot"] -->|"loads"| skills
+  agent -->|"runs kb search"| index
 
   classDef built stroke-dasharray: 6 4
-  class init,up,sync built
+  class init,sync built
 ```
