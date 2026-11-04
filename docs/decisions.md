@@ -1,6 +1,6 @@
 # Decision record
 
-*2026-11-04. The choices that would be expensive to reverse once building starts. Each row says what was chosen, the alternative not taken, why, what breaks if the choice is wrong, and the signal that would reopen it. [design.md](design.md) and [plan.md](plan.md) assume these. The history, including the 2026-11-03 stack these decisions replaced, is in the [research report](../research/oss-landscape-2026-11.md) §12–16.*
+*2026-11-04. The choices that would be expensive to reverse once building starts. Each row says what was chosen, the alternative not taken, why, what breaks if the choice is wrong, and the signal that would reopen it. [design.md](design.md) and [plan.md](plan.md) assume these. The history, including the 2026-11-03 stack these decisions replaced, is in the [research report](../research/oss-landscape-2026-11.md) §12–16, and the full 2026-11-03 design is kept in [full-design/](full-design/design.md).*
 
 ## 1. The decisions
 

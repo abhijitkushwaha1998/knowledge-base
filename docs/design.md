@@ -28,7 +28,7 @@ It is a search index, not a wiki. Every source is converted to text, split into 
 
 ## 2. What changed on 2026-11-04, and why
 
-The 2026-11-03 design was sized for ten sources and a cross-source graph, and needed about thirteen components to get there. With the sources narrowed to five, most of those components had no job left. The redesign borrows from [team-knowledge-kit](https://github.com/rsihare93/team-knowledge-kit) (Apache-2.0, also a design, read on 2026-11-04).
+The 2026-11-03 design was sized for ten sources and a cross-source graph, and needed about thirteen components to get there. With the sources narrowed to five, most of those components had no job left. The redesign borrows from [team-knowledge-kit](https://github.com/rsihare93/team-knowledge-kit) (Apache-2.0, also a design, read on 2026-11-04). The 2026-11-03 design is kept in full in [full-design/design.md](full-design/design.md).
 
 | Removed | Replaced by |
 |---|---|

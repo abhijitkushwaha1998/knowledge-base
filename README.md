@@ -34,6 +34,7 @@ claude                         # the agent finds the kb skill and runs kb search
 | [`docs/architecture.md`](docs/architecture.md) | Four Mermaid diagrams: the system, one sync run, one question, what `kb init` writes |
 | [`docs/plan.md`](docs/plan.md) | The implementation plan: package layout, build order with "done" per step, prerequisites by role, the first demo |
 | [`docs/glossary.md`](docs/glossary.md) | Terms used in the documents, and one paragraph on each component |
+| [`docs/full-design/`](docs/full-design/design.md) | The full 2026-11-03 design, before simplification: Postgres and pgvector, CocoIndex, Slack, Teams and Drive connectors, the code graph, entities and the MCP gateway. Kept for reference when a deferred item comes back |
 | [`research/oss-landscape-2026-11.md`](research/oss-landscape-2026-11.md) | The research behind the choices: 85 open-source projects compared, the earlier (2026-11-03) stack in §12–15, and the simplification in §16 |
 | `research/md2html.py` | Renders any of the Markdown files above into a self-contained `.html` beside it, Mermaid included |
 
@@ -45,6 +46,7 @@ claude                         # the agent finds the kb skill and runs kb search
 4. [`docs/plan.md`](docs/plan.md) to see what gets built in which order.
 5. [`docs/glossary.md`](docs/glossary.md) whenever a term is unclear.
 6. The research report when you want the evidence behind a choice, or to see what was considered and dropped.
+7. [`docs/full-design/`](docs/full-design/design.md) for the original full-scope design, before simplification.
 
 ## Principles, short form
 

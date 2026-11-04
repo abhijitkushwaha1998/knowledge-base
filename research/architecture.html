@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Org Knowledge Base Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  /* layout: one wide left-to-right flow figure, then a 65ch text column that reads it */
+  --bg:#eef1f4; --panel:#ffffff; --ink:#1b2630; --muted:#5f6f7e; --line:#b9c4ce;
+  --accent:#0c7a78; --accent-soft:#dcf1ef;
+  --font-body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0f161d; --panel:#172029; --ink:#e4eaf0; --muted:#97a5b2; --line:#36434f;
+    --accent:#43cdc3; --accent-soft:#143a38; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0f161d; --panel:#172029; --ink:#e4eaf0; --muted:#97a5b2; --line:#36434f;
+  --accent:#43cdc3; --accent-soft:#143a38; color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.55 var(--font-body)}
+main{max-width:1480px;margin:0 auto;padding:36px 20px 72px}
+header{max-width:65ch}
+h1{font-size:1.75rem;line-height:1.2;margin:0 0 .4em;font-weight:600;text-wrap:balance}
+.standfirst{margin:0;color:var(--muted)}
+figure{margin:28px 0 0;padding:20px 20px 14px;background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow-x:auto}
+figure svg{display:block;width:100%;min-width:1100px;height:auto;color:var(--ink);font-family:var(--font-body)}
+figcaption{margin:14px 0 0;color:var(--muted);font-size:.92rem;max-width:80ch}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:28px 40px;margin-top:36px}
+h2{font-size:1.05rem;margin:0 0 .5em;font-weight:600}
+.cols p,.cols li{margin:0 0 .6em;max-width:65ch}
+.cols ul{padding-left:1.1em;margin:0}
+code{font:.88em var(--font-mono);background:var(--accent-soft);color:var(--ink);padding:.08em .3em;border-radius:3px}
+a{color:var(--accent)}
+a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.foot{margin-top:40px;color:var(--muted);font-size:.9rem}
+
+/* diagram marks */
+.box{fill:var(--panel);stroke:currentColor;stroke-width:1.2}
+.box.build{stroke-dasharray:5 4}
+.inner{fill:var(--bg)}
+.col{font-size:11px;letter-spacing:.08em;fill:var(--muted);font-weight:600}
+.lbl{font-size:12px;font-weight:600;fill:currentColor}
+.mono{font-family:var(--font-mono);font-weight:500}
+.sub{font-size:10.5px;fill:var(--muted)}
+.body{font-size:10.5px;fill:currentColor}
+.alab{font-size:10px;fill:var(--muted)}
+.arrow{stroke:currentColor;fill:none;stroke-width:1.4;marker-end:url(#arr)}
+#arr path{fill:currentColor}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>Org Knowledge Base Architecture</h1>
+  <p class="standfirst">Option B from the landscape report: permissively licensed libraries composed around one self-hosted Postgres. No per-document permissions by design: whatever is connected is readable by every caller the gateway admits.</p>
+</header>
+
+<figure>
+<svg viewBox="0 44 1430 760" role="img" aria-label="One incremental sync feeds one Postgres that holds text, vectors and the graph, so a single query can join a service's code to its docs and runbooks.">
+<defs>
+  <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z"/></marker>
+</defs>
+
+<!-- column headers -->
+<text class="col" x="145" y="74" text-anchor="middle">SOURCES</text>
+<text class="col" x="505" y="74" text-anchor="middle">INGEST</text>
+<text class="col" x="910" y="74" text-anchor="middle">STORE</text>
+<text class="col" x="1305" y="74" text-anchor="middle">ACCESS</text>
+
+<!-- sources -->
+<rect class="box" x="40" y="92" width="210" height="46" rx="3"/>
+<text class="lbl" x="50" y="111">Confluence · SharePoint · Drive</text>
+<text class="sub" x="50" y="127">pages, files, attachments</text>
+
+<rect class="box" x="40" y="152" width="210" height="46" rx="3"/>
+<text class="lbl" x="50" y="171">Slack · Teams · transcripts</text>
+<text class="sub" x="50" y="187">messages, threads</text>
+
+<rect class="box" x="40" y="212" width="210" height="46" rx="3"/>
+<text class="lbl" x="50" y="231">Postgres · MySQL</text>
+<text class="sub" x="50" y="247">tbls schema · rows deferred</text>
+
+<rect class="box build" x="40" y="272" width="210" height="46" rx="3"/>
+<text class="lbl" x="50" y="291">Draw.io · Lucidchart</text>
+<text class="sub" x="50" y="307">custom parser: shapes, edges</text>
+
+<rect class="box" x="40" y="440" width="210" height="46" rx="3"/>
+<text class="lbl" x="50" y="459">GitLab · GitHub</text>
+<text class="sub" x="50" y="475">repositories</text>
+
+<!-- source arrows -->
+<line class="arrow" x1="250" y1="115" x2="368" y2="115"/>
+<text class="alab" x="309" y="109" text-anchor="middle">pages + files</text>
+<line class="arrow" x1="250" y1="175" x2="368" y2="175"/>
+<text class="alab" x="309" y="169" text-anchor="middle">messages + threads</text>
+<line class="arrow" x1="250" y1="235" x2="368" y2="235"/>
+<text class="alab" x="309" y="229" text-anchor="middle">schema</text>
+<line class="arrow" x1="250" y1="295" x2="368" y2="295"/>
+<text class="alab" x="309" y="289" text-anchor="middle">shapes + edges</text>
+<line class="arrow" x1="250" y1="463" x2="368" y2="463"/>
+<text class="alab" x="309" y="457" text-anchor="middle">commits, files</text>
+
+<!-- incremental sync -->
+<rect class="box" x="370" y="92" width="270" height="240" rx="3"/>
+<text class="lbl" x="386" y="114">Incremental sync · CocoIndex</text>
+<rect class="box build inner" x="386" y="128" width="238" height="102" rx="3"/>
+<text class="lbl" x="396" y="146" style="font-size:11px">Connector sources (adapted)</text>
+<text class="sub" x="396" y="162">unstructured-ingest: Confluence, Slack,</text>
+<text class="sub" x="396" y="178">SharePoint, Drive, GitHub, GitLab, SQL</text>
+<text class="sub" x="396" y="194">Teams, transcripts: forked from Onyx (MIT)</text>
+<text class="sub" x="396" y="210">Docling parses attachments</text>
+<text class="body" x="386" y="246">fingerprint: process only changed records</text>
+<text class="body" x="386" y="264">deletes propagate: chunks, vectors, edges</text>
+<text class="body" x="386" y="282">poll every 30 min; CDC where the source pushes</text>
+<text class="body" x="386" y="300">flow state kept in Postgres</text>
+<text class="body" x="386" y="318">re-run when the pipeline definition changes</text>
+
+<!-- entity resolution -->
+<rect class="box build" x="370" y="346" width="270" height="58" rx="3"/>
+<text class="lbl" x="386" y="366">Entity resolution (built)</text>
+<text class="body" x="386" y="382">rules first: repo URLs, k8s/Terraform names,</text>
+<text class="body" x="386" y="396">channel conventions; LLM matching later</text>
+
+<!-- code indexer -->
+<rect class="box" x="370" y="420" width="270" height="86" rx="3"/>
+<text class="lbl" x="386" y="442">Code indexer · codebase-memory-mcp</text>
+<text class="body" x="386" y="460">Tree-sitter, 162 grammars → SQLite graph</text>
+<text class="body" x="386" y="476">cross-service edges: HTTP, gRPC, GraphQL</text>
+<text class="body" x="386" y="492">runs per repo in CI; exports to the store</text>
+
+<!-- ingest → store arrows -->
+<line class="arrow" x1="640" y1="235" x2="768" y2="235"/>
+<text class="alab" x="704" y="216" text-anchor="middle">upsert chunks, vectors,</text>
+<text class="alab" x="704" y="228" text-anchor="middle">and edges</text>
+<line class="arrow" x1="640" y1="375" x2="768" y2="375"/>
+<text class="alab" x="704" y="367" text-anchor="middle">entities + alias edges</text>
+<line class="arrow" x1="640" y1="463" x2="768" y2="463"/>
+<text class="alab" x="704" y="455" text-anchor="middle">SQLite → edges rows</text>
+
+<!-- store -->
+<rect class="box" x="770" y="92" width="280" height="414" rx="3"/>
+<text class="lbl" x="786" y="114">Postgres · the one store</text>
+
+<rect class="box inner" x="786" y="130" width="248" height="46" rx="3"/>
+<text class="lbl mono" x="796" y="147">chunks</text>
+<text class="sub" x="796" y="163">text · built-in FTS; BM25 upgrade gated</text>
+
+<rect class="box inner" x="786" y="186" width="248" height="46" rx="3"/>
+<text class="lbl mono" x="796" y="203">embeddings</text>
+<text class="sub" x="796" y="219">pgvector · HNSW · one local text model</text>
+
+<rect class="box inner" x="786" y="242" width="248" height="46" rx="3"/>
+<text class="lbl mono" x="796" y="259">entities</text>
+<text class="sub" x="796" y="275">id, kind, name + aliases</text>
+
+<rect class="box inner" x="786" y="298" width="248" height="46" rx="3"/>
+<text class="lbl mono" x="796" y="315">edges</text>
+<text class="sub" x="796" y="331">plain table · recursive CTE for 2–3 hops</text>
+
+<rect class="box inner" x="786" y="354" width="248" height="46" rx="3"/>
+<text class="lbl mono" x="796" y="371">documents</text>
+<text class="sub" x="796" y="387">source, external_id, fingerprint, seen_at</text>
+
+<text class="body" x="786" y="428">one transaction per sync batch</text>
+<text class="body" x="786" y="444">search, join, ranking: one SQL statement</text>
+
+<!-- query arrows -->
+<line class="arrow" x1="1220" y1="265" x2="1052" y2="265"/>
+<text class="alab" x="1135" y="228" text-anchor="middle">one SQL statement:</text>
+<text class="alab" x="1135" y="241" text-anchor="middle">vector ∪ keyword ∪ graph hop</text>
+<text class="alab" x="1135" y="254" text-anchor="middle">fused with RRF</text>
+<line class="arrow" x1="1050" y1="420" x2="1218" y2="420"/>
+<text class="alab" x="1135" y="438" text-anchor="middle">ranked chunks + source links</text>
+
+<!-- consumers -->
+<rect class="box" x="1220" y="92" width="170" height="70" rx="3"/>
+<text class="lbl" x="1230" y="111">Consumers</text>
+<text class="sub" x="1230" y="127">Claude Code, IDE agents · MCP</text>
+<text class="sub" x="1230" y="141">internal apps · REST, SDKs</text>
+<text class="sub" x="1230" y="155">people · search UI (optional)</text>
+<line class="arrow" x1="1305" y1="162" x2="1305" y2="198"/>
+<text class="alab" x="1312" y="185">API key or SSO</text>
+
+<!-- gateway -->
+<rect class="box build" x="1220" y="200" width="170" height="306" rx="3"/>
+<text class="lbl" x="1230" y="222">Gateway (built)</text>
+<text class="sub" x="1230" y="238">MCP server + REST API</text>
+<text class="body" x="1230" y="262">authenticates callers;</text>
+<text class="body" x="1230" y="277">no per-document filter</text>
+<text class="body" x="1230" y="301">tool allow-list</text>
+<text class="body" x="1230" y="325">audit of every query</text>
+<text class="body" x="1230" y="349">read-only tools; nothing</text>
+<text class="body" x="1230" y="364">destructive exposed</text>
+<text class="body" x="1230" y="388">rate limits, response caps</text>
+
+<!-- legend -->
+<rect class="box" x="40" y="548" width="18" height="12"/>
+<text class="body" x="66" y="558">reused as-is</text>
+<rect class="box build" x="170" y="548" width="18" height="12"/>
+<text class="body" x="196" y="558">built or adapted</text>
+
+<!-- upgrade paths -->
+<text class="col" x="40" y="604">CEILINGS → UPGRADE PATHS · NOT BUILT ON DAY ONE</text>
+
+<rect class="box build" x="40" y="622" width="300" height="66" rx="3"/>
+<text class="lbl" x="50" y="642">Graphiti episodes</text>
+<text class="body" x="50" y="658">Slack, transcripts, tacit knowledge → temporal facts</text>
+<text class="sub" x="50" y="674">needs Neo4j (GPL) or Neptune: legal review first</text>
+
+<rect class="box build" x="370" y="622" width="270" height="66" rx="3"/>
+<text class="lbl" x="380" y="642">Temporal</text>
+<text class="body" x="380" y="658">when sync needs durable multi-step jobs</text>
+<text class="sub" x="380" y="674">wraps CocoIndex runs: retries, cursors</text>
+
+<rect class="box build" x="770" y="622" width="280" height="66" rx="3"/>
+<text class="lbl" x="780" y="642">Zoekt</text>
+<text class="body" x="780" y="658">when agents need regex search across repos</text>
+<text class="sub" x="780" y="674">Apache-2.0 trigram index beside the store</text>
+
+<rect class="box build" x="1090" y="622" width="300" height="66" rx="3"/>
+<text class="lbl" x="1100" y="642">Qdrant or OpenSearch</text>
+<text class="body" x="1100" y="658">when pgvector HNSW outgrows one node</text>
+<text class="sub" x="1100" y="674">replaces the embeddings table only</text>
+
+<rect class="box build" x="40" y="704" width="300" height="66" rx="3"/>
+<text class="lbl" x="50" y="724">pg_textsearch</text>
+<text class="body" x="50" y="740">when built-in FTS recall is the bottleneck</text>
+<text class="sub" x="50" y="756">PostgreSQL License · BM25 index inside the store</text>
+
+<rect class="box build" x="370" y="704" width="270" height="66" rx="3"/>
+<text class="lbl" x="380" y="724">Debezium</text>
+<text class="body" x="380" y="740">when rows from an operational DB are indexed</text>
+<text class="sub" x="380" y="756">log-based CDC; brings Kafka Connect</text>
+
+<rect class="box build" x="770" y="704" width="280" height="66" rx="3"/>
+<text class="lbl" x="780" y="724">Graph engine (AGE or Neo4j)</text>
+<text class="body" x="780" y="740">when queries need variable-length paths</text>
+<text class="sub" x="780" y="756">arrives with Graphiti; AGE is Apache-2.0</text>
+</svg>
+<figcaption>One incremental sync feeds one Postgres that holds text, vectors and the graph, so a single query can join a service's code to its docs and runbooks. Dashed boxes are what we build or adapt; everything else is reused as-is.</figcaption>
+</figure>
+
+<div class="cols">
+  <section>
+    <h2>How a record gets in</h2>
+    <p>Connectors list each source and hand records to CocoIndex. It fingerprints every record against the <code>documents</code> table, skips anything unchanged, and otherwise writes chunks, embeddings and graph edges in one transaction. Entity resolution then links what the connectors brought in: a repository URL found on a page, a service name from a Kubernetes manifest, a channel named after a team. Rules do this first; an LLM pass can follow for the long tail. A record that disappears from the source has its chunks, vectors and edges deleted on the next run.</p>
+    <p>Code takes a separate path. codebase-memory-mcp runs per repository, builds its own SQLite graph including HTTP, gRPC and GraphQL calls between services, and that graph is exported as rows into the shared <code>entities</code> and <code>edges</code> tables so a service can be joined to its runbook and the pages that describe it. Code itself is not embedded in Postgres; the per-repository index stays with the indexer.</p>
+  </section>
+  <section>
+    <h2>How a question gets answered</h2>
+    <p>Every call reaches the gateway with an API key or an SSO login. The gateway issues one SQL statement: vector similarity, keyword search and one graph hop (a join on <code>edges</code>), fused with RRF, and returns ranked chunks with links back to the source. There is no per-document filtering: any caller the gateway admits can read anything that was indexed, so the choice of which spaces, channels and repositories to connect is the access control.</p>
+  </section>
+  <section>
+    <h2>What we build ourselves</h2>
+    <ul>
+      <li>The gateway: MCP plus REST, caller authentication, a tool allow-list, audit, response caps, no destructive tools.</li>
+      <li>Entity resolution: the <code>entities</code> table and the rules that fill it. This is the join that makes the graph useful.</li>
+      <li>Connector gaps: Teams and meeting transcripts forked from Onyx's MIT core; a Draw.io and Lucidchart parser.</li>
+      <li>The export from codebase-memory-mcp's SQLite graph into <code>entities</code> and <code>edges</code>, pinned to its schema version.</li>
+      <li>The <code>edges</code> schema: service, repo, team, person, doc, runbook, table, diagram.</li>
+    </ul>
+  </section>
+</div>
+
+<p class="foot">Source: <a href="https://claude.ai/artifact/AigmzbmqpLNtvbRZ1isZPX">Open-Source Landscape for a Unified Organizational Knowledge Base</a>, §12 to §14. Licenses as verified there: Postgres, pgvector, CocoIndex, Docling, codebase-memory-mcp, unstructured-ingest, tbls and Onyx's non-EE connectors are all MIT, Apache-2.0 or PostgreSQL-licensed.</p>
+</main>
+</body>
+</html>
