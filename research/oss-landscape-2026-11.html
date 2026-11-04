@@ -23,6 +23,8 @@ pre#fallback{white-space:pre-wrap}
 
 *Research date: 2026-11-02. Licenses, star counts and last-push dates are a snapshot from the GitHub API on that date.*
 
+*Simplified 2026-11-04: §16 supersedes the §12 stack, narrows the sources to git, Confluence, database schemas, Lucidchart and an uploads folder, and replaces Postgres with one SQLite file. The standing decision record is [`docs/decisions.md`](../docs/decisions.md). §1–15 are kept as the record of what was considered.*
+
 *Decision record added 2026-11-03: see §12, with the reasoning behind each chosen component in §13 and an adversarial design review of those choices in §14, applied the same day (two components changed, one deferred, two added; Postgres is self-hosted). §15 explains what an entity is and how entity resolution works. How the system is configured and run, including `kb-init`, is in [`docs/design.md`](../docs/design.md), with Markdown diagrams in [`docs/architecture.md`](../docs/architecture.md); the CocoIndex statements in §12 and §13 were corrected for its v1 rewrite at the same time. Per-document permissions and Jira are out of scope. Sections that discuss them are kept as landscape information and are marked superseded in §12.*
 
 ## How to read this report
@@ -663,6 +665,8 @@ These options are presented for comparison; no single stack is being recommended
 
 ## 12. Decision record (2026-11-03)
 
+*Superseded on 2026-11-04 by §16.*
+
 ### Decisions
 
 1. **No per-document permission gating.** Any caller the gateway admits can read anything that was indexed. Access control is (a) which spaces, channels, drives and repositories are connected, which should be org-wide-readable sources only, and (b) who holds a gateway credential.
@@ -893,6 +897,45 @@ The risk is a wrong merge: if two services are merged into one, a question about
 
 Each connector or indexer creates the entities it knows about; entity resolution then links those separate records together.
 
+## 16. Simplification (2026-11-04)
+
+*Supersedes the §12 stack. The standing decision record, with alternatives, consequences and the deferred list, is [`docs/decisions.md`](../docs/decisions.md). How the simplified system is configured and run is in [`docs/design.md`](../docs/design.md), whose §2 lists what was removed and what was adopted from [team-knowledge-kit](https://github.com/rsihare93/team-knowledge-kit).*
+
+### Decisions
+
+1. **The sources are git repositories, Confluence, database schemas (tbls) and Lucidchart, plus an uploads folder.** Meeting transcripts and other documents are exported by people and dropped into that folder. There are no chat, meeting or drive connectors (Slack, Teams, Zoom, Gong, Fireflies, SharePoint, Google Drive), and no Draw.io parser.
+2. **The system is a search index only.** No language model runs in the pipeline.
+3. **One SQLite file**, with FTS5 for keywords and sqlite-vec for vectors, replaces Postgres and pgvector.
+4. **A CLI and an Agent Skill** replace the MCP gateway.
+
+### Why each §12 component went
+
+The §12 stack was sized for ten sources and a cross-source graph. With five sources left, four of them reached through a plain REST call or a file read, most components no longer had a job.
+
+| §12 component | Why it was there | Why it is no longer needed |
+|---|---|---|
+| unstructured-ingest | One dependency for many SaaS connectors | Only Confluence remains, and it takes two REST calls |
+| Onyx fork | Teams and meeting transcripts | Transcripts arrive through the uploads folder |
+| CocoIndex v1 | Incremental sync and propagating deletes across many connectors | Every remaining source exposes an id and a version, so a table and a loop cover it. Its LMDB state file, which had to be reset together with Postgres, goes too |
+| Postgres + pgvector in Docker | Text, vectors and graph in one transaction | SQLite holds text and vectors in one transaction, with no service to run. Its FTS5 has real BM25, which settles §14 finding 2 |
+| Entity resolution, `entities`, `edges` | Joining a service&#x27;s code, docs, channels and runbooks | Its main inputs (Slack channel names, the code graph, Kubernetes and Terraform names) are gone. It comes back only if the golden questions show recall lost to name mismatches |
+| codebase-memory-mcp export | Service and route edges for the graph | No graph. Agents use their own code tools |
+| Gateway (MCP + REST) | Keys, rate limits, audit and caps for a shared server | A local CLI over a local file needs none of these. Read-only access and the result cap stay |
+| Docling | Layout and tables in attachments | MarkItDown is lighter and needs no model weights. This accepts the table flattening noted in §13.1 |
+
+### Chosen stack (v1)
+
+| Layer | Pick | Ceiling → upgrade |
+|---|---|---|
+| Sources | `git`, `httpx` REST calls (Confluence, Lucid), `tbls doc`, a folder walk | A new source is one module with `list()` and `fetch()` |
+| Incremental sync | Our own loop over `(id, version)`, with a guard against partial listings | — |
+| Conversion | MarkItDown 0.1.9 (MIT) | Tables or scanned PDFs matter → Docling |
+| Embeddings | granite-embedding-small-english-r2 (Apache-2.0, 384 dimensions) | Content not in English → bge-m3 |
+| Keyword search | SQLite FTS5, `bm25()` | — |
+| Vector search | sqlite-vec 0.1.9, brute force | A few hundred thousand chunks → sqlite-vec ANN, LanceDB or pgvector |
+| Access | The `kb` CLI and the `kb` skill | An agent without a shell → an MCP server over the same SQL |
+| Measurement | `kb eval` over golden questions (recall@k) | — |
+
 ## Appendix: verification provenance
 
 - Workflow run `wf_55eaddc3-97f`: 5 search angles, 21 sources fetched, 104 claims extracted, 25 verified (21 confirmed, 4 refuted).
@@ -906,6 +949,8 @@ Each connector or indexer creates the entities it knows about; entity resolution
 <script type="text/markdown" id="src"># Open-Source Landscape for a Unified Organizational Knowledge Base
 
 *Research date: 2026-11-02. Licenses, star counts and last-push dates are a snapshot from the GitHub API on that date.*
+
+*Simplified 2026-11-04: §16 supersedes the §12 stack, narrows the sources to git, Confluence, database schemas, Lucidchart and an uploads folder, and replaces Postgres with one SQLite file. The standing decision record is [`docs/decisions.md`](../docs/decisions.md). §1–15 are kept as the record of what was considered.*
 
 *Decision record added 2026-11-03: see §12, with the reasoning behind each chosen component in §13 and an adversarial design review of those choices in §14, applied the same day (two components changed, one deferred, two added; Postgres is self-hosted). §15 explains what an entity is and how entity resolution works. How the system is configured and run, including `kb-init`, is in [`docs/design.md`](../docs/design.md), with Markdown diagrams in [`docs/architecture.md`](../docs/architecture.md); the CocoIndex statements in §12 and §13 were corrected for its v1 rewrite at the same time. Per-document permissions and Jira are out of scope. Sections that discuss them are kept as landscape information and are marked superseded in §12.*
 
@@ -1547,6 +1592,8 @@ These options are presented for comparison; no single stack is being recommended
 
 ## 12. Decision record (2026-11-03)
 
+*Superseded on 2026-11-04 by §16.*
+
 ### Decisions
 
 1. **No per-document permission gating.** Any caller the gateway admits can read anything that was indexed. Access control is (a) which spaces, channels, drives and repositories are connected, which should be org-wide-readable sources only, and (b) who holds a gateway credential.
@@ -1776,6 +1823,45 @@ The risk is a wrong merge: if two services are merged into one, a question about
 | diagram | The Draw.io and Lucidchart parser |
 
 Each connector or indexer creates the entities it knows about; entity resolution then links those separate records together.
+
+## 16. Simplification (2026-11-04)
+
+*Supersedes the §12 stack. The standing decision record, with alternatives, consequences and the deferred list, is [`docs/decisions.md`](../docs/decisions.md). How the simplified system is configured and run is in [`docs/design.md`](../docs/design.md), whose §2 lists what was removed and what was adopted from [team-knowledge-kit](https://github.com/rsihare93/team-knowledge-kit).*
+
+### Decisions
+
+1. **The sources are git repositories, Confluence, database schemas (tbls) and Lucidchart, plus an uploads folder.** Meeting transcripts and other documents are exported by people and dropped into that folder. There are no chat, meeting or drive connectors (Slack, Teams, Zoom, Gong, Fireflies, SharePoint, Google Drive), and no Draw.io parser.
+2. **The system is a search index only.** No language model runs in the pipeline.
+3. **One SQLite file**, with FTS5 for keywords and sqlite-vec for vectors, replaces Postgres and pgvector.
+4. **A CLI and an Agent Skill** replace the MCP gateway.
+
+### Why each §12 component went
+
+The §12 stack was sized for ten sources and a cross-source graph. With five sources left, four of them reached through a plain REST call or a file read, most components no longer had a job.
+
+| §12 component | Why it was there | Why it is no longer needed |
+|---|---|---|
+| unstructured-ingest | One dependency for many SaaS connectors | Only Confluence remains, and it takes two REST calls |
+| Onyx fork | Teams and meeting transcripts | Transcripts arrive through the uploads folder |
+| CocoIndex v1 | Incremental sync and propagating deletes across many connectors | Every remaining source exposes an id and a version, so a table and a loop cover it. Its LMDB state file, which had to be reset together with Postgres, goes too |
+| Postgres + pgvector in Docker | Text, vectors and graph in one transaction | SQLite holds text and vectors in one transaction, with no service to run. Its FTS5 has real BM25, which settles §14 finding 2 |
+| Entity resolution, `entities`, `edges` | Joining a service's code, docs, channels and runbooks | Its main inputs (Slack channel names, the code graph, Kubernetes and Terraform names) are gone. It comes back only if the golden questions show recall lost to name mismatches |
+| codebase-memory-mcp export | Service and route edges for the graph | No graph. Agents use their own code tools |
+| Gateway (MCP + REST) | Keys, rate limits, audit and caps for a shared server | A local CLI over a local file needs none of these. Read-only access and the result cap stay |
+| Docling | Layout and tables in attachments | MarkItDown is lighter and needs no model weights. This accepts the table flattening noted in §13.1 |
+
+### Chosen stack (v1)
+
+| Layer | Pick | Ceiling → upgrade |
+|---|---|---|
+| Sources | `git`, `httpx` REST calls (Confluence, Lucid), `tbls doc`, a folder walk | A new source is one module with `list()` and `fetch()` |
+| Incremental sync | Our own loop over `(id, version)`, with a guard against partial listings | — |
+| Conversion | MarkItDown 0.1.9 (MIT) | Tables or scanned PDFs matter → Docling |
+| Embeddings | granite-embedding-small-english-r2 (Apache-2.0, 384 dimensions) | Content not in English → bge-m3 |
+| Keyword search | SQLite FTS5, `bm25()` | — |
+| Vector search | sqlite-vec 0.1.9, brute force | A few hundred thousand chunks → sqlite-vec ANN, LanceDB or pgvector |
+| Access | The `kb` CLI and the `kb` skill | An agent without a shell → an MCP server over the same SQL |
+| Measurement | `kb eval` over golden questions (recall@k) | — |
 
 ## Appendix: verification provenance
 
